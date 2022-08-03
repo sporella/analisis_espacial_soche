@@ -1,0 +1,149 @@
+---
+title: "Análisis Espacial"
+subtitle: "Minicurso SOCHE"
+author: "Stephanie Orellana Bello"
+toc: true
+language: 
+  title-block-author-single: "Autora"
+  toc-title-document: "Tabla de contenidos"
+number-sections: true
+highlight-style: zenburn
+theme: minty
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+# Análisis de patrones de puntos
+
+## Cargar datos
+
+Trabajaremos con un set de datos que descargaremos con el paquete `{rgbif}`.
+
+> GBIF —Infraestructura Mundial de Información en Biodiversidad— es una organización internacional y una red de datos financiada por gobiernos de todo el mundo, destinada a proporcionar a cualquier persona, en cualquier lugar, acceso abierto y gratuito a datos sobre cualquier tipo de forma de vida que hay en la Tierra.
+
+ESto está en formato Darwin Core:
+
+El set de datos también se encuentra disponible en el github.
+
+
+```{r}
+# install.packages("rgbif")
+
+data <- rgbif::occ_data(scientificName = "Jubaea chilensis", 
+                        limit=10000, 
+                        country = "CL", 
+                        basisOfRecord = "HUMAN_OBSERVATION")$data
+
+```
+
+## Convertir a objeto espacial
+
+Al descargar este set de datos, estará disponible como un `data.frame` por lo que es necesario transformarlo a un objeto espacial para hacer algunas operaciones. Esto lo haremos con el paquete `{sf}`:
+
+```{r, message=F, warning=FALSE}
+# install.packages("sf")
+# install.packages("tidyverse")
+
+library(sf)
+library(tidyverse)
+
+data_sp <- data %>% 
+  filter(!is.na(decimalLongitude), !is.na(decimalLatitude)) %>% 
+  st_as_sf(coords = c("decimalLongitude", "decimalLatitude"), crs = 4326)
+```
+
+## Visualizar
+Podemos visualizarlo de manera rápida con el paquete `{mapview}`:
+
+```{r, message=F, warning=FALSE}
+# install.packages("mapview")
+library(mapview)
+
+mapview(data_sp)
+```
+
+
+Ahora podemos comenzar con nuestro análisis de patrones de puntos:
+
+## Corroborar sistema de proyección
+
+Este tipo de análisis solo puede ser hecho con sistemas de coordinadas proyectados, entonces es necesario cambiar nuestro sistema de coordenadas:
+
+```{r}
+data_sp_utm <- data_sp %>% 
+  st_transform(crs = 32719)
+data_sp_utm$geometry
+
+st_crs(data_sp_utm)
+st_crs(data_sp)
+```
+ 
+## Establecer ventana de análisis
+
+Como primera aproximación utilizaré la extensión de los puntos:
+
+```{r}
+win <- data_sp_utm %>% 
+  st_bbox() %>% 
+  st_as_sfc()
+
+mapview(list(data_sp_utm, win))
+```
+
+## Crear patrón de puntos
+
+Ahora utilizaremos el paquete `{spatstat}` para realizar nuestro análisis. Para crear un patrón de puntos es necesario tener las coordenadas de los puntos y la ventana de análisis:
+
+```{r, message=F, warning=FALSE}
+# install.packages("spatstat")
+
+library(spatstat)
+
+x <- st_coordinates(data_sp_utm)[,1]
+y <- st_coordinates(data_sp_utm)[,2]
+box <- as.owin(win)   
+  
+pp1 <- ppp(x = x, y = y, window = box)
+plot(pp1)
+```
+
+## Realizar kernel de densidad
+
+Para calcular la intensidad de uso utilizaremos la función `density`:
+
+```{r}
+kernel <- density.ppp(pp1)
+plot(kernel)
+```
+
+```{r}
+library(stars)
+kernel_stars <- kernel %>%  st_as_stars() %>% st_set_crs(32719)
+
+mapview(kernel_stars)
+
+```
+
+Podemos estandarizar el kernel haciendo un poco de álgebra:
+
+```{r}
+
+kernel_stars$valor_01 <- (kernel_stars$v - min(kernel_stars$v))/(max(kernel_stars$v)- min(kernel_stars$v)) 
+
+mapview(kernel_stars[2])
+```
+
+
+## K de ripley
+
+> La función K de Ripley, *K(r)* es un método basado en la distancia que mide la aglomeración de un patrón de puntos espacial contando el número medio de vecinos que presenta cada punto dentro de un círculo de radio (r) determinado, en un determinado espacio, la función K compara el valor observado a una cierta distancia con el valor esperado a esa misma distancia; dado un proceso de Poisson homogéneo, también conocido como complete spatial randomness (CSR), es decir, que todos los puntos tienen la misma probabilidad de ocurrir en cualquier parte del área de estudio [Fuente](https://www.redalyc.org/journal/597/59760150003/html/) 
+
+Hacemos el análisis de K de Ripley con la función `Kest` 
+
+```{r}
+k_ripley <- Kest(pp1)
+plot(k_ripley)
+```
+
+Para más información sobre la interpretación, [VER](https://spatstat.org/explainKplot.html)

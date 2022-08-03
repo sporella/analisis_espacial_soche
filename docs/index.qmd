@@ -1,0 +1,238 @@
+---
+title: "Análisis Espacial con R"
+subtitle: "<h2 style='color:#53dbb0'>Minicurso SOCHE<br>Parte 1</h2>"
+date: "Agosto 2022"
+author: Stephanie Orellana Bello
+format:
+  revealjs: 
+    theme: [default, custom.scss]
+---
+
+# Datos espaciales
+
+::: {layout="[20,30,20, 30]"}
+```{r}
+knitr::include_graphics("https://miro.medium.com/max/1400/1*UdaXFl89fjYB6mvMhLIp5Q.jpeg")
+```
+
+```{r}
+knitr::include_graphics("https://upload.wikimedia.org/wikipedia/commons/thumb/e/e2/OrteliusWorldMap1570.jpg/300px-OrteliusWorldMap1570.jpg")
+```
+
+```{r}
+knitr::include_graphics("https://upload.wikimedia.org/wikipedia/commons/thumb/2/27/Snow-cholera-map-1.jpg/1200px-Snow-cholera-map-1.jpg")
+```
+
+```{r}
+knitr::include_graphics("https://www.fayerwayer.com/resizer/qvuBmWmI-3WosaIa3ZHfJdaVL7A=/800x0/filters:format(jpg):quality(70)/cloudfront-us-east-1.images.arcpublishing.com/metroworldnews/DXBFT4JY45H2FGCXUVNV5J5HEE.jpg")
+```
+:::
+
+# Diferentes tipos de datos espaciales
+
+## Vectores
+
+Paquete `{sf}`
+
+::: {layout-ncol="2"}
+-   Mediciones de campo
+-   Estaciones meteorológicas
+-   Caminos
+-   Rutas GPS
+-   Límites administrativos
+-   Áreas de estudio
+-   Puntos de interés
+-   etc.
+
+```{r, out.width="100%"}
+knitr::include_graphics("img/vector.png")
+```
+:::
+
+## Rásters
+
+Paquetes `{terra}` `{stars}`
+
+>Paquete `{raster}` se encuentra en retirada
+
+::: {layout-ncol="2"}
+-   Imágenes satelitales/aéreas
+-   Modelos climáticos
+-   Interpolaciones espaciales
+-   Modelos de elevación digital
+-   Usos de suelo
+-   etc.
+
+```{r, out.width="100%"}
+knitr::include_graphics("img/raster.png")
+```
+:::
+
+
+
+# Diferentes formatos
+
+-   Archivos de texto con coordenadas
+-   GeoJSON
+-   Shapefile
+-   PostGIS
+-   SpatialLite
+-   Raster
+-   ncdf
+
+
+# Proyecciones y sistemas de coordenadas
+
+::: {layout="[[1, 0.5]]"}
+
+
+![](img/proj.png){fig-align="center"}
+
+### Deformaciones
+
+- Área
+- Angulo
+- Forma
+- Distancia
+- Dirección
+:::
+
+# Estadística espacial
+
+La primera ley de la geografía, o principio de autocorrelación espacial:
+
+>Todas las cosas están relacionadas entre sí, pero las cosas más próximas en el espacio tienen una relación mayor que las distantes. (Waldo Tobler)
+
+# Análisis de patrones de puntos
+
+El enfoque principal de este análisis radica en la información contenida en la ubicación de los puntos, y  por lo general, estas ubicaciones **no se controlan mediante muestreo** sino que son el resultado de un proceso que nos interesa estudiar.
+
+## Tipos de patrones
+
+```{r}
+knitr::include_graphics("https://geoinnova.org/wp-content/uploads/2021/08/Geoestadistica_2.jpg")
+```
+
+## Ventana de análisis
+
+```{r, echo = F, cache=TRUE}
+library(sf)
+library(spatstat)
+n = 30
+xy = data.frame(x = runif(n), y = runif(n)) %>% st_as_sf(coords = c("x", "y"))
+
+w1 = st_bbox(c(xmin = 0, ymin = 0, xmax = 1, ymax = 1)) %>%
+        st_as_sfc() 
+w2 = st_sfc(st_point(c(1, 0.5))) %>% st_buffer(1.2)
+
+par(mfrow = c(1, 2), mar = c(2.1, 2.1, 0.1, 0.5), xaxs = "i", yaxs = "i")
+plot(w1, axes = TRUE, col = 'grey')
+plot(xy, add = TRUE)
+plot(w2, axes = TRUE, col = 'grey')
+plot(xy, add = TRUE, cex = .5)
+```
+
+## Ventana de análisis
+```{r, cache=TRUE}
+pp1 = c(w1, st_geometry(xy)) %>% as.ppp()
+c1 = st_buffer(st_centroid(w2), 1.2)
+pp2 = c(c1, st_geometry(xy)) %>% as.ppp()
+den1 <- density(pp1, sigma = bw.diggle)
+den2 <- density(pp2, sigma = bw.diggle)
+par(mfrow = c(1, 2), mar = c(0,0,1.1,2))
+plot(den1)
+plot(pp1, add=TRUE)
+plot(den2)
+plot(pp1, add=TRUE)
+```
+
+# Interpolación espacial
+
+La interpolación espacial es la actividad de estimar valores de variables espacialmente continuas para ubicaciones espaciales donde no se han observado, en función de las observaciones. La metodología estadística para la interpolación espacial, **denominada geoestadística**, se ocupa del modelado, la predicción y la simulación de fenómenos espacialmente continuos.
+
+## Puntos con mediciones de una variable continua
+
+```{r, cache = T}
+library(sf)
+library(tidyverse)
+
+precip <- read_sf("data/EC_mapa.shp", crs = 4326) %>% 
+  mutate(VALOR = as.numeric(VALOR)) %>% 
+  st_transform(32719)
+valparaiso <- read_sf("data/comunas_valparaiso.shp") %>% 
+  st_transform(st_crs(precip))
+
+precip_cut <- precip %>%  st_crop(valparaiso)
+
+ggplot()+
+  geom_sf(data = valparaiso)+
+  geom_sf(data = precip_cut, aes(color = VALOR))
+  
+  
+```
+## Métodos más utilizados
+
+- **Deterministas:** generan superficies continuas mediante el grado de similitud o suavizado. Dentro de esta categoría encontramos los métodos globales, locales, **IDW** y **Spline**.
+
+- **Geoestadísticos:** generan superficies continuas a partir de las propiedades estadísticas de los datos de partida. Dentro de esta categoría encontramos **Kriging** y **Cokriging**.
+
+## IDW
+
+![](https://docs.qgis.org/3.4/es/_images/idw_interpolation.png)
+
+## IDW
+
+Paquete `{gstat}`
+
+```{r, cache = T}
+
+library(stars)
+library(gstat)
+
+st_bbox(valparaiso) %>%
+  st_as_stars(dx = 10000) -> grd
+
+
+i = idw(VALOR~1, precip_cut, grd)
+
+ggplot() + 
+  geom_stars(data = i, aes(fill = var1.pred, x = x, y = y)) + 
+    geom_sf(data = st_cast(valparaiso, "MULTILINESTRING")) + 
+    geom_sf(data = precip_cut)+
+    labs(x = NULL , y = NULL)
+```
+
+## Krigging
+
+Para hacer predicciones espaciales usando métodos geoestadísticos, primero necesitamos identificar un modelo para la media y para la correlación espacial. El el modelo más simple la media es una constante desconocida y la correlación espacial se modela mediante un **variograma**:
+
+![](https://www.researchgate.net/profile/Juan-Ibanez-5/publication/287648923/figure/fig2/AS:669433991274509@1536616909811/Some-types-of-variograms-Three-types-of-variogram-models-apply-to-different-situations.ppm)
+
+## Variograma de nuestros datos
+
+```{r}
+v = gstat::variogram(VALOR~1, precip_cut)
+plot(v)
+```
+
+# Seguiremos con este tema en la próxima sesión
+
+# Recomendaciones
+## Libros
+
+- [Geocomputation with R](https://geocompr.robinlovelace.net/)
+
+- [Spatial Data Science with R](https://rspatial.org/raster/index.html#)
+
+- [Spatial Data Science](https://keen-swartz-3146c4.netlify.app/)
+
+## Personas
+
+- [Paula Moraga](https://www.paulamoraga.com/)
+
+- [Ezer Pebesma](https://twitter.com/edzerpebesma)
+
+- [Jakub Nowosad](https://twitter.com/jakub_nowosad)
+
+- [Robin Lovelace](https://twitter.com/robinlovelace)
+
