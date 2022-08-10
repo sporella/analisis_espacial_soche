@@ -1,0 +1,205 @@
+---
+title: "Geoestadística"
+subtitle: "Minicurso SOCHE"
+author: "Stephanie Orellana Bello"
+toc: true
+language: 
+  title-block-author-single: "Autora"
+  toc-title-document: "Tabla de contenidos"
+number-sections: true
+highlight-style: zenburn
+theme: minty
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+# Cargar datos
+
+Primero cargaremos los datos y realizaremos un repaso de los conceptos importantes para trabajar con datos espaciales, como:
+
+-   Tipo de archivo: vector (shp, geojson, csv), raster
+-   Proyección espacial:
+    -   crs -\> [epgs](https://epsg.io/)
+-   Ventana de análisis: definir cuál será nuestra "área de estudio"
+-   Corroborar tipo de datos dentro del archivo. Por ejemplo las variables a utilizar no pueden estar como caracteres
+
+```{r, message=FALSE,warning=FALSE}
+library(sf)
+library(tidyverse)
+
+precip <- read_sf("data/EC_mapa.shp", crs = 4326) %>% 
+  st_transform(32719)
+
+valpo <- read_sf("data/comunas_valparaiso.shp") %>% 
+  st_transform(st_crs(precip))
+
+valparaiso <- valpo %>%  
+  st_make_valid() %>% 
+  st_buffer(dist = 50000) %>% 
+  st_bbox() %>% 
+  st_as_sfc()
+  
+
+precip_cut <- precip %>% 
+  st_crop(valparaiso) %>% 
+  mutate(valor = as.numeric(VALOR),
+         altura = as.numeric(altura))
+
+
+mapview::mapview(list(precip_cut, valparaiso))
+
+```
+
+# Preparar set de prueba y entrenamiento
+
+Con la ayuda de `{tidymodels}` prepararemos dos set de datos, uno de entrenamiento y otro de prueba.
+
+> ¡Es importante utilizar una semilla para que los resultados sean reproducibles!
+
+```{r, warning=F, message=F}
+library(tidymodels)
+set.seed(2022)
+precip_split <- initial_split(precip_cut)
+train_data <- training(precip_split)
+test_data <- testing(precip_split)
+```
+
+# Crear grilla para predicción
+
+Para estos métodos debemos crear una grilla (ráster vacío) para almacenar nuestras predicciones. Esto lo podemos hacer de manera simple con el paquete `{stars}`:
+
+```{r, warning=F, message=F}
+library(stars)
+
+grd <- st_bbox(valparaiso) %>%
+  st_as_stars(dx = 10000) 
+```
+
+# IDW
+
+El método IDW (inverso ponderado de la distancia) realiza un promedio de los datos que se encuentran más cercanos al punto a interpolar, tomando como peso la distancia. En este sentido puntos más cercanos serán más parecidos a su vecino.
+
+```{r, warning=F, message=FALSE}
+library(gstat)
+
+i <- idw(VALOR~1, train_data, grd)
+
+
+ggplot() + 
+  geom_stars(data = i, aes(fill = var1.pred, x = x, y = y)) + 
+    geom_sf(data = st_cast(valpo, "MULTILINESTRING")) + 
+    geom_sf(data = train_data)+
+    labs(x = NULL , y = NULL)+
+    scale_fill_distiller(palette = "PuBuGn", direction = 1)
+
+
+mapview::mapview(i)
+```
+
+# Kriging
+
+> El krigeaje, krigeado o kriging (del francés krigeage), también conocido como regresión en procesos Gaussianos, es un método de interpolación geoestadístico de estimación de puntos. Utiliza un modelo de variograma para la obtención de los ponderadores que se dan a cada punto de referencia usado en la estimación. Esta técnica de interpolación se basa en la premisa de que la variación espacial continúa con un mismo patrón homogéneo. [Wikipedia](https://es.wikipedia.org/wiki/Krigeaje)
+
+## Calcular variograma
+
+```{r, warning=FALSE, message=FALSE}
+library(gstat)
+
+v0 <- variogram(valor~1, train_data)
+plot(v0, plot.numbers = TRUE)
+```
+
+## Ajustar modelos
+
+Este ajuste se hace normalmente "al ojo" en un proceso de prueba y error.
+
+> El paquete `{automap}` tiene una función para cálculo automático, pero no siempre funciona bien para el set de datos
+
+
+![](https://i.stack.imgur.com/T4WrU.png)
+
+
+```{r, warning=FALSE, message=FALSE}
+fit1 <- fit.variogram(v0, vgm(psill = 8000, model = "Mat", range = 50000, kappa = 10, nugget = 1000))
+fit2 <-  fit.variogram(v0, vgm(psill = 10000, model = "Lin", range = 40000, kappa = 10,  nugget = 1000))
+fit3 <-  fit.variogram(v0, vgm(psill = 10000, model = "Wav", range = 60000, kappa = 0.1,  nugget = 0))
+
+v.m <- fit1
+plot(v0, v.m, plot.numbers = TRUE)
+```
+
+Ahora realizamos la interpolación con Kriging:
+
+```{r}
+k1 <- krige(valor~1, precip_cut, grd, fit1)
+k2 <- krige(valor~1, precip_cut, grd, fit2)
+k3 <- krige(valor~1, precip_cut, grd, fit3)
+
+```
+
+# Medidas de desempeño
+
+Acá comparamos los valores de los puntos de prueba con los valores predichos. Primero debemos obtener los valores en los mismos puntos de prueba, eso lo hacemos con st_extract:
+
+```{r}
+puntos <- k1 %>% 
+    st_extract(test_data) %>%
+    mutate(valor = test_data$valor) %>%
+    st_drop_geometry()
+
+```
+
+Podemos utilizar funciones del paquete `{yardstick}` de tidymodels para calcular métricas:
+
+```{r}
+# Raíz del error cuadrático medio
+rmse(data = puntos, truth = "valor", estimate = "var1.pred")
+
+# Error medio absoluto
+mae(data = puntos, truth = "valor", estimate = "var1.pred")
+```
+
+Ahora haciendo un poco de programación, puedo generar una función para que calcule estas métricas y aplicarla en bucle con `map_dfr()`:
+
+```{r}
+
+metricas <- function(z) {
+  p <- z %>%
+    st_extract(test_data) %>%
+    mutate(valor = test_data$valor) %>%
+    st_drop_geometry()
+  
+  s <- summary(lm(p$var1.pred ~ p$valor))
+  
+  data.frame(rbind(
+    rmse(p, "valor", "var1.pred"),
+    mae(p, "valor", "var1.pred"),
+    c("r^2", "r.squared", s$r.squared)
+  ))
+  
+}
+map_dfr(list(i = i, k1 = k1, k2 = k2,  k3 = k3), metricas, .id = "tipo")
+
+```
+
+# Visualización
+
+Podemos visualizar todos nuestros modelos con ggplot:
+
+```{r}
+m <- list(idw = data.frame(i), 
+          k1 = data.frame(k1),
+          k2 = data.frame(k2),
+          k3 = data.frame(k3)) %>%  
+  bind_rows(.id = "tipo")
+
+ggplot() + 
+  geom_tile(data = m, aes(fill = var1.pred, x = x, y = y)) + 
+    geom_sf(data = st_cast(valpo, "MULTILINESTRING")) + 
+    geom_sf(data = precip_cut)+
+  facet_wrap(~tipo)+
+    labs(x = NULL , y = NULL)+
+    scale_fill_distiller(palette = "PuBuGn", direction = 1)
+
+```

@@ -1,0 +1,208 @@
+---
+title: "Aprendizaje Estadístico"
+subtitle: "Minicurso SOCHE"
+author: "Stephanie Orellana Bello"
+toc: true
+language: 
+  title-block-author-single: "Autora"
+  toc-title-document: "Tabla de contenidos"
+number-sections: true
+highlight-style: zenburn
+theme: minty
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+# Cargar datos
+
+Este ejemplo está basado en el capítulo 12 del libro [Geocomputation with R](https://geocompr.robinlovelace.net/spatial-cv.html) y utiliza un set de datos del paquete `{spDataLarge}`.
+
+El set de datos contiene puntos de inicio de deslizamientos de tierra en una zona de Ecuador en una tabla denominada `lsl`, los campos de la tabla son:
+
+-   **slope:** ángulo de pendiente (°)
+-   **cplan:** curvatura en planta (rad m−1) que expresa la convergencia o divergencia de una pendiente y, por lo tanto, el flujo de agua
+-   **cprof:** curvatura del perfil (rad m-1) como medida de la aceleración del flujo, también conocida como cambio de pendiente descendente en el ángulo de la pendiente
+-   **elev:** elevación (m s.n.m.) como representación de las diferentes zonas altitudinales de vegetación y precipitación en el área de estudio
+-   **log10_carea:** el logaritmo decádico del área de captación (log10 m2) que representa la cantidad de agua que fluye hacia un lugar
+
+También cargaremos una colección de rasters con las variables espacializadas, llamado `ta`.
+
+```{r}
+library(tidyverse)
+library(sf)
+library(terra)
+
+# install.packages("spDataLarge", repos = "https://geocompr.r-universe.dev")
+data("lsl", package = "spDataLarge")
+ta <- terra::rast(system.file("raster/ta.tif", package = "spDataLarge"))
+```
+
+# Enfoque tradicional
+
+## Definir modelo
+
+En este caso usaremos un glm con familia bionamial.
+
+```{r}
+fit = glm(lslpts ~ slope + cplan + cprof + elev + log10_carea,
+          family = binomial(),
+          data = lsl)
+class(fit)
+fit
+```
+
+### Predicciones
+
+Podemos obtener las predicciones con la función `predict()`.
+
+Para aplicar esas predicciones de forma espacial, utilizando nuestra colección de variables raster, usamos `terra::predict()`:
+
+```{r}
+pred_glm <- predict(object = fit, type = "response")
+head(pred_glm)
+
+pred <- terra::predict(ta, model = fit, type = "response")
+```
+
+## Visualización
+
+Visualizamos con ggplot
+
+```{r}
+lsl_tab <- pred %>%  
+  as.data.frame(xy = TRUE) %>% 
+  mutate(lyr1 = round(lyr1, 2), 
+         cut = cut_interval(lyr1, n = 5, dig.lab = 1))
+
+ggplot(lsl_tab)+
+  geom_tile(aes(x = x, y = y, fill = cut))+
+  scale_fill_brewer(palette = "Reds")
+```
+
+## Cálculo de AUROC
+
+Esta es una métrica de rendimiento que puede utilizarse para evaluar los modelos de clasificación.
+
+![](https://glassboxmedicine.files.wordpress.com/2019/02/roc-curve-v2.png)
+
+> Para saber más sobre esta métrica puedes consultar [acá](https://glassboxmedicine.com/2019/02/23/measuring-performance-auc-auroc/)
+
+```{r}
+pROC::auc(pROC::roc(lsl$lslpts, fitted(fit)))
+```
+
+> Sin embargo, es necesario ir más allá en el análisis de nuestro modelo, ya que esta métrica no toma en consideración el aspecto espacial de los datos.
+
+![](https://geocompr.robinlovelace.net/figures/13_partitioning.png)
+
+# Validación espacial con paquete `{mlr3}`
+
+necesitaremos los siguiente paquetes:
+
+```{r}
+library(mlr3)
+library(mlr3learners)
+library(mlr3extralearners)
+library(mlr3spatiotempcv)
+```
+
+## Crear una tarea
+
+```{r}
+task = mlr3spatiotempcv::TaskClassifST$new(
+  id = "ecuador_lsl",
+  backend = mlr3::as_data_backend(lsl), 
+  target = "lslpts", 
+  positive = "TRUE",
+  coordinate_names = c("x", "y"),
+  extra_args = list(
+    coords_as_features = FALSE,
+    crs = "EPSG:32717")
+)
+```
+
+
+## Establecer el modelo y el tipo de resampleo
+
+Para conocer los diferentes modelos que podemos utilizar podemos correr lo siguiente:
+
+```{r}
+mlr3extralearners::list_mlr3learners(
+  filter = list(class = "classif", properties = "twoclass"), 
+  select = c("id", "mlr3_package", "required_packages"))
+```
+
+Generamos un objeto con nuestro método y otro con el tipo de resampleo, que en este caso es `repeated_spcv_coords` para que sea valización cruzada espacial.
+
+```{r}
+learner <- mlr3::lrn("classif.log_reg", predict_type = "prob")
+resampling <- mlr3::rsmp("repeated_spcv_coords", folds = 5, repeats = 100)
+```
+
+## Correr resampleo con validación cruzada espacial
+
+```{r}
+rr_spcv_glm = mlr3::resample(task = task,
+                             learner = learner,
+                             resampling = resampling)
+```
+
+## Calcular AUROC "espacial"
+
+```{r}
+score_spcv_glm = rr_spcv_glm$score(measure = mlr3::msr("classif.auc"))
+mean(score_spcv_glm$classif.auc)
+```
+
+# Validación espacial con paquete `{tidymodels}`
+
+> Ejemplo obtenido desde el blog de [Julia Silge](https://juliasilge.com/blog/map-challenge/)
+
+## Determinar modelo
+
+```{r}
+library(tidymodels)
+library(spatialsample)
+
+glm_spec <- logistic_reg()
+lsl_form <- lslpts ~ slope + cplan + cprof + elev + log10_carea
+
+lsl_wf <- workflow(lsl_form, glm_spec)
+```
+
+## Generar grupos para validación cruzada
+
+```{r}
+set.seed(234)
+no_sp_folds <- vfold_cv(lsl, v = 5, strata = lslpts)
+no_sp_folds
+
+set.seed(123)
+sp_folds <- spatial_clustering_cv(lsl, coords = c("x", "y"), v = 5)
+sp_folds
+```
+
+## Correr resampleos
+
+```{r}
+set.seed(2021)
+regular_rs <- fit_resamples(lsl_wf, no_sp_folds)
+set.seed(2021)
+spatial_rs <- fit_resamples(lsl_wf, sp_folds)
+```
+
+## Comparar AUROC
+
+```{r}
+collect_metrics(regular_rs)
+collect_metrics(spatial_rs)
+
+```
