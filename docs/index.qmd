@@ -156,10 +156,10 @@ La interpolación espacial es la actividad de estimar valores de variables espac
 library(sf)
 library(tidyverse)
 
-precip <- read_sf("data/EC_mapa.shp", crs = 4326) %>% 
+precip <- read_sf("../data/EC_mapa.shp", crs = 4326) %>% 
   mutate(VALOR = as.numeric(VALOR)) %>% 
   st_transform(32719)
-valparaiso <- read_sf("data/comunas_valparaiso.shp") %>% 
+valparaiso <- read_sf("../data/comunas_valparaiso.shp") %>% 
   st_transform(st_crs(precip))
 
 precip_cut <- precip %>%  st_crop(valparaiso)
@@ -202,7 +202,7 @@ ggplot() +
     labs(x = NULL , y = NULL)
 ```
 
-## Krigging
+## Kriging
 
 Para hacer predicciones espaciales usando métodos geoestadísticos, primero necesitamos identificar un modelo para la media y para la correlación espacial. El el modelo más simple la media es una constante desconocida y la correlación espacial se modela mediante un **variograma**:
 
