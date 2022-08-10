@@ -41,6 +41,7 @@ library(sf)
 library(terra)
 
 # install.packages("spDataLarge", repos = "https://geocompr.r-universe.dev")
+
 data("lsl", package = "spDataLarge")
 ta <- terra::rast(system.file("raster/ta.tif", package = "spDataLarge"))
 ```
@@ -49,7 +50,7 @@ ta <- terra::rast(system.file("raster/ta.tif", package = "spDataLarge"))
 
 ## Definir modelo
 
-En este caso usaremos un glm con familia bionamial.
+En este caso usaremos un glm con familia binomial.
 
 ```{r}
 fit = glm(lslpts ~ slope + cplan + cprof + elev + log10_carea,
@@ -105,19 +106,19 @@ pROC::auc(pROC::roc(lsl$lslpts, fitted(fit)))
 
 # Validación espacial con paquete `{mlr3}`
 
-necesitaremos los siguiente paquetes:
+Necesitaremos los siguiente paquetes:
 
 ```{r}
 library(mlr3)
 library(mlr3learners)
 library(mlr3extralearners)
-library(mlr3spatiotempcv)
+library(mlr3spatiotempcv) ## nuestro amigo!!!
 ```
 
 ## Crear una tarea
 
 ```{r}
-task = mlr3spatiotempcv::TaskClassifST$new(
+task <- mlr3spatiotempcv::TaskClassifST$new(
   id = "ecuador_lsl",
   backend = mlr3::as_data_backend(lsl), 
   target = "lslpts", 
@@ -150,7 +151,7 @@ resampling <- mlr3::rsmp("repeated_spcv_coords", folds = 5, repeats = 100)
 ## Correr resampleo con validación cruzada espacial
 
 ```{r}
-rr_spcv_glm = mlr3::resample(task = task,
+rr_spcv_glm <- mlr3::resample(task = task,
                              learner = learner,
                              resampling = resampling)
 ```
@@ -158,7 +159,7 @@ rr_spcv_glm = mlr3::resample(task = task,
 ## Calcular AUROC "espacial"
 
 ```{r}
-score_spcv_glm = rr_spcv_glm$score(measure = mlr3::msr("classif.auc"))
+score_spcv_glm <- rr_spcv_glm$score(measure = mlr3::msr("classif.auc"))
 mean(score_spcv_glm$classif.auc)
 ```
 

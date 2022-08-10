@@ -21,6 +21,8 @@ Primero cargaremos los datos y realizaremos un repaso de los conceptos important
 -   Tipo de archivo: vector (shp, geojson, csv), raster
 -   Proyección espacial:
     -   crs -\> [epgs](https://epsg.io/)
+      lat-lon: 4326
+      utm_h19: 32719
 -   Ventana de análisis: definir cuál será nuestra "área de estudio"
 -   Corroborar tipo de datos dentro del archivo. Por ejemplo las variables a utilizar no pueden estar como caracteres
 
@@ -30,6 +32,8 @@ library(tidyverse)
 
 precip <- read_sf("data/EC_mapa.shp", crs = 4326) %>% 
   st_transform(32719)
+
+precip %>%  st_crs
 
 valpo <- read_sf("data/comunas_valparaiso.shp") %>% 
   st_transform(st_crs(precip))
@@ -83,7 +87,7 @@ El método IDW (inverso ponderado de la distancia) realiza un promedio de los da
 ```{r, warning=F, message=FALSE}
 library(gstat)
 
-i <- idw(VALOR~1, train_data, grd)
+i <- idw(valor~1, train_data, grd)
 
 
 ggplot() + 
@@ -125,16 +129,16 @@ fit1 <- fit.variogram(v0, vgm(psill = 8000, model = "Mat", range = 50000, kappa 
 fit2 <-  fit.variogram(v0, vgm(psill = 10000, model = "Lin", range = 40000, kappa = 10,  nugget = 1000))
 fit3 <-  fit.variogram(v0, vgm(psill = 10000, model = "Wav", range = 60000, kappa = 0.1,  nugget = 0))
 
-v.m <- fit1
+v.m <- fit3
 plot(v0, v.m, plot.numbers = TRUE)
 ```
 
 Ahora realizamos la interpolación con Kriging:
 
 ```{r}
-k1 <- krige(valor~1, precip_cut, grd, fit1)
-k2 <- krige(valor~1, precip_cut, grd, fit2)
-k3 <- krige(valor~1, precip_cut, grd, fit3)
+k1 <- krige(valor~1, train_data, grd, fit1)
+k2 <- krige(valor~1, train_data, grd, fit2)
+k3 <- krige(valor~1, train_data, grd, fit3)
 
 ```
 
@@ -179,6 +183,7 @@ metricas <- function(z) {
   ))
   
 }
+
 map_dfr(list(i = i, k1 = k1, k2 = k2,  k3 = k3), metricas, .id = "tipo")
 
 ```
